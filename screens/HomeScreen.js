@@ -4,36 +4,9 @@ import { useNavigation } from '@react-navigation/native'
 import useAuth from '../hooks/useAuth';
 import { AntDesign, Entypo, Ionicons } from '@expo/vector-icons'
 import Swiper from 'react-native-deck-swiper';
-import { collection, doc, onSnapshot } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, onSnapshot, query, serverTimestamp, setDoc, where } from 'firebase/firestore';
 import { db } from '../firebase';
-import { async } from '@firebase/util';
-
-const DUMMY_DATA = [
-  {
-    firstName: 'Fox',
-    lastName: 'Mulder',
-    job: 'detective',
-    photoURL: 'https://www.biography.com/.image/ar_1:1%2Cc_fill%2Ccs_srgb%2Cg_face%2Cq_auto:good%2Cw_300/MTc5OTcxMjMwMjM1ODk0OTA2/gettyimages-972635212.jpg',
-    age: 34,
-    id: 34
-  },
-  {
-    firstName: 'Scully',
-    lastName: 'Anderson',
-    job: 'detective',
-    photoURL: 'https://www.biography.com/.image/ar_1:1%2Cc_fill%2Ccs_srgb%2Cg_face%2Cq_auto:good%2Cw_300/MTU1NDc3MTEyODE0MzE0NTcy/taylor-swift-attends-the-2016-vanity-fair-oscar-party-hosted-by-graydon-carter-at-wallis-annenberg-center-for-the-performing-arts-on-february-28-2016-in-beverly-hills-california-photo-by-anthony-harve.jpg',
-    age: 32,
-    id: 22
-  },
-  {
-    firstName: 'Elon',
-    lastName: 'Musk',
-    job: 'kosmonaut',
-    photoURL: 'https://www.biography.com/.image/ar_1:1%2Cc_fill%2Ccs_srgb%2Cg_face%2Cq_auto:good%2Cw_300/MTc5OTczNzUxMzgxNjk3ODgw/gettyimages-1200618132.jpg',
-    age: 40,
-    id: 334
-  },
-]
+import generateId from '../lib/generateid';
 
 const HomeScreen = () => {
   const navigation = useNavigation();
@@ -45,24 +18,86 @@ const HomeScreen = () => {
     if (!snapshot.exists()) {
       navigation.navigate('Modal')
     }
-  })
-  );
+  }));
+
   useEffect(() => {
     let unsub;
+
     const fetchCards = async () => {
-      unsub = onSnapshot(collection(db, 'users'), (snapshot) => {
-        setProfiles(
-          snapshot.docs.filter(doc => doc.id !== user.uid).map((doc) => ({
-            id: doc.id,
-            ...doc.data(),
-          }))
-        )
-      })
+      const passes = await getDocs(
+        collection(db, 'users', user.uid, 'passes')
+      ).then(
+        (snapshot) => snapshot.docs.map((doc) => doc.id))
+
+      const swipes = await getDocs(
+        collection(db, 'users', user.uid, 'swipes')).then(
+          (snapshot) => snapshot.docs.map((doc) => doc.id))
+
+      const passedUserIds = passes.length > 0 ? passes : ['test'];
+      const swipedUserIds = swipes.length > 0 ? swipes : ['test'];
+
+      unsub = onSnapshot(
+        query(
+          collection(db, 'users'),
+          where('id', 'not-in', [...passedUserIds, ...swipedUserIds])),
+        (snapshot) => {
+          setProfiles(
+            snapshot.docs
+              .filter((doc) => doc.id !== user.uid)
+              .map((doc) => ({
+                id: doc.id,
+                ...doc.data(),
+              }))
+          )
+        })
     }
     fetchCards();
     return unsub;
-  }, [])
+  }, [db]);
 
+  const swipeLeft = (cardIndex) => {
+    if (!profiles[cardIndex]) return;
+
+    const userSwiped = profiles[cardIndex];
+    console.log(`You swiped PASS on ${userSwiped.displayName}`);
+    setDoc(doc(db, 'users', user.uid, 'passes', userSwiped.id), userSwiped);
+
+  }
+  const swipeRight = async (cardIndex) => {
+    if (!profiles[cardIndex]) return;
+
+    const userSwiped = profiles[cardIndex];
+    const loggedInProfile = await (
+      await getDoc(doc(db, 'users', user.uid))).data();
+
+    getDoc(doc(db, 'users', userSwiped.id, 'swipes', user.uid)).then(
+      (documentSnapshot) => {
+        if (documentSnapshot.exists()) {
+          console.log(`Valio, jums pavyko susijungti su ${userSwiped.displayName}`)
+
+          setDoc(doc(db, 'users', user.uid, 'swipes', userSwiped.id), userSwiped);
+
+          //CREATE A MATCH
+          setDoc(doc(db, 'matches', generateId(user.uid, userSwiped.id)), {
+            users: {
+              [user.uid]: loggedInProfile,
+              [userSwiped.id]: userSwiped,
+            },
+            userMatched: [user.uid, userSwiped.id],
+            timestamp: serverTimestamp(),
+          });
+          navigation.navigate('Match', {
+            loggedInProfile,
+            userSwiped
+          });
+
+        } else {
+          console.log(`You swiped on ${userSwiped.displayName} (${userSwiped.job})`)
+          setDoc(doc(db, 'users', user.uid, 'swipes', userSwiped.id), userSwiped);
+        }
+      }
+    );
+  };
 
   return (
     <SafeAreaView className='flex-1'>
@@ -89,10 +124,12 @@ const HomeScreen = () => {
           cardIndex={0}
           animateCardOpacity
           verticalSwipe={false}
-          onSwipedLeft={() => {
+          onSwipedLeft={(cardIndex) => {
+            swipeLeft(cardIndex)
             console.log('Pavykes')
           }}
-          onSwipedRight={() => {
+          onSwipedRight={(cardIndex) => {
+            swipeRight(cardIndex);
             console.log('Nepavykes')
           }}
           backgroundColor={'#4FD0E9'}
